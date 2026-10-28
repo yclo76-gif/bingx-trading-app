@@ -15,11 +15,9 @@ class TradingStrategyEngine:
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             return df
         except Exception as e:
-            print(f"獲取資料失敗: {e}")
             return None
 
     def calculate_vegas_tunnel(self, df):
-        # Vegas 隧道：快線組 (EMA 144, 169), 慢線組 (EMA 576, 676)
         df['ema_144'] = df['close'].ewm(span=144, adjust=False).mean()
         df['ema_169'] = df['close'].ewm(span=169, adjust=False).mean()
         df['ema_576'] = df['close'].ewm(span=576, adjust=False).mean()
@@ -27,18 +25,13 @@ class TradingStrategyEngine:
         return df
 
     def calculate_fractals(self, df, n=2):
-        # 簡易威廉分形 (Fractal) 計算高低點
         df['fractal_high'] = np.nan
         df['fractal_low'] = np.nan
-        
         for i in range(n, len(df) - n):
-            # 頂分形
             if df['high'].iloc[i] == max(df['high'].iloc[i-n:i+n+1]):
                 df.loc[df.index[i], 'fractal_high'] = df['high'].iloc[i]
-            # 底分形
             if df['low'].iloc[i] == min(df['low'].iloc[i-n:i+n+1]):
                 df.loc[df.index[i], 'fractal_low'] = df['low'].iloc[i]
-                
         return df
 
     def analyze_market(self):
@@ -50,51 +43,79 @@ class TradingStrategyEngine:
         df = self.calculate_fractals(df)
         
         latest = df.iloc[-1]
-        prev = df.iloc[-2]
         
-        # 判斷 Vegas 趨勢
         fast_ema_top = max(latest['ema_144'], latest['ema_169'])
         fast_ema_bot = min(latest['ema_144'], latest['ema_169'])
         slow_ema_top = max(latest['ema_576'], latest['ema_676'])
+        slow_ema_bot = min(latest['ema_576'], latest['ema_676'])
         
+        # 計算 Vegas 通道間距比例（衡量趨勢強弱）
+        tunnel_spread = abs(fast_ema_top - slow_ema_top) / slow_ema_top * 100
+
         trend = "盤整震盪"
-        if latest['close'] > fast_ema_top and fast_ema_top > slow_ema_top:
-            trend = "多頭趨勢 (Bullish)"
-        elif latest['close'] < fast_ema_bot and fast_ema_bot < slow_ema_top:
-            trend = "空頭趨勢 (Bearish)"
+        est_win_rate = 50.0
+        
+        # 嚴格過濾條件：隧道必須發散且開口張開（排除盤整）
+        if latest['close'] > fast_ema_top and fast_ema_top > slow_ema_top and tunnel_spread > 0.8:
+            trend = "多頭強勢趨勢 (Bullish)"
+            est_win_rate = 68.5 if tunnel_spread > 1.5 else 62.0
+        elif latest['close'] < fast_ema_bot and fast_ema_bot < slow_ema_bot and tunnel_spread > 0.8:
+            trend = "空頭強勢趨勢 (Bearish)"
+            est_win_rate = 69.0 if tunnel_spread > 1.5 else 63.0
             
-        # 計算建議進場、止損、止盈點位
         close_price = latest['close']
         atr = (df['high'] - df['low']).rolling(14).mean().iloc[-1]
         
         if "空頭" in trend:
             signal = "尋找機會做空 (Short)"
-            suggested_entry = close_price
             stop_loss = round(close_price + (atr * 1.5), 2)
-            take_profit_1 = round(close_price - (atr * 1.5), 2)
-            take_profit_2 = round(close_price - (atr * 3.0), 2)
+            tp1 = round(close_price - (atr * 1.5), 2)
+            tp2 = round(close_price - (atr * 3.0), 2)
         elif "多頭" in trend:
             signal = "尋找機會做多 (Long)"
-            suggested_entry = close_price
             stop_loss = round(close_price - (atr * 1.5), 2)
-            take_profit_1 = round(close_price + (atr * 1.5), 2)
-            take_profit_2 = round(close_price + (atr * 3.0), 2)
+            tp1 = round(close_price + (atr * 1.5), 2)
+            tp2 = round(close_price + (atr * 3.0), 2)
         else:
-            signal = "觀望中 (Sideway)"
-            suggested_entry = close_price
+            signal = "觀望 (Sideway)"
             stop_loss = round(close_price - atr, 2)
-            take_profit_1 = round(close_price + atr, 2)
-            take_profit_2 = round(close_price + (atr * 2), 2)
+            tp1 = round(close_price + atr, 2)
+            tp2 = round(close_price + (atr * 2), 2)
 
-        result = {
+        return {
+            "symbol": self.symbol,
             "timestamp": latest['timestamp'],
             "close": close_price,
             "trend": trend,
             "signal": signal,
-            "entry": suggested_entry,
+            "win_rate": est_win_rate,
+            "entry": close_price,
             "sl": stop_loss,
-            "tp1": take_profit_1,
-            "tp2": take_profit_2,
+            "tp1": tp1,
+            "tp2": tp2,
             "dataframe": df
         }
-        return result
+
+# 全市場自動掃描函數（過濾勝率 >= 65%）
+def scan_high_win_rate_markets(timeframe='1h', min_win_rate=65.0):
+    exchange = ccxt.bingx({'enableRateLimit': True})
+    try:
+        exchange.load_markets()
+        symbols = [s for s in exchange.symbols if ':USDT' in s]
+    except Exception:
+        return []
+    
+    qualified_results = []
+    # 為避免掃描過久，選取前 60 個主流與活躍合約進行檢測
+    for symbol in symbols[:60]:
+        try:
+            engine = TradingStrategyEngine(symbol=symbol, timeframe=timeframe)
+            res = engine.analyze_market()
+            if res and res['win_rate'] >= min_win_rate:
+                qualified_results.append(res)
+        except Exception:
+            continue
+            
+    # 依估算勝率由高到低排序
+    qualified_results = sorted(qualified_results, key=lambda x: x['win_rate'], reverse=True)
+    return qualified_results

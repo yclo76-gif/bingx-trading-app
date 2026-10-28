@@ -1,86 +1,77 @@
 import streamlit as st
 import plotly.graph_objects as go
-from trading_strategy import TradingStrategyEngine
+from trading_strategy import quick_scan_watchlist
 
-st.set_page_config(page_title="BingX 自選合約交易監控看板", layout="wide")
+st.set_page_config(page_title="極短線高勝率雷達看板", layout="wide")
 
-st.title("🚀 BingX 自選合約交易決策與止盈止損監控看板")
-st.markdown("結合 **Vegas 雙通道** 與 **Auto Trendline (分形)** 的高勝率策略系統（鎖定截圖自選幣種與高效時區）。")
-
-# 定義你截圖中指定的專屬自選幣種清單 (轉換為 CCXT 格式)
-watchlist_symbols = [
-    "BTC/USDT:USDT", "ETH/USDT:USDT", "BNB/USDT:USDT", "ADA/USDT:USDT", 
-    "XRP/USDT:USDT", "LINK/USDT:USDT", "SOL/USDT:USDT", "TRX/USDT:USDT", 
-    "ZEC/USDT:USDT", "HYPE/USDT:USDT", "DOGE/USDT:USDT", "XMR/USDT:USDT", 
-    "XLM/USDT:USDT", "UNI/USDT:USDT", "NEAR/USDT:USDT", "BCH/USDT:USDT", 
-    "AVAX/USDT:USDT", "LTC/USDT:USDT", "HBAR/USDT:USDT", "SUI/USDT:USDT", 
-    "CC/USDT:USDT", "WIF/USDT:USDT", "BTW/USDT:USDT"
-]
+st.title("⚡ BingX 5m / 15m 極短線高勝率策略雷達")
+st.markdown("自動掃描自選清單，過濾出 **勝率 $\ge 65\%$** 的強勢發散幣種，提供左側選單快速切換與右側主窗格詳細監控。")
 
 # 側邊欄設定
-st.sidebar.header("⚙️ 交易參數設定")
+st.sidebar.header("⚙️ 極短線掃描設定")
 
-# 下拉選單直接使用你指定的自選幣種
-symbol_option = st.sidebar.selectbox("選擇自選交易幣種", watchlist_symbols, index=1)
+# 專注於 5m 與 15m 短線時區
+selected_timeframe = st.sidebar.selectbox("選擇短線 K線週期", ["5m", "15m"], index=1)
+min_win_rate_target = st.sidebar.slider("勝率過濾門檻 (%)", min_value=60, max_value=75, value=65, step=1)
 
-# 恢復前一版的精簡 K線週期選單
-timeframe_option = st.sidebar.selectbox("選擇 K線週期", ["15m", "1h", "4h", "1d"], index=1)
-
-# 初始化引擎並抓取數據
-engine = TradingStrategyEngine(symbol=symbol_option, timeframe=timeframe_option)
-
-if st.button("🔄 立即重新整理盤面分析"):
+if st.sidebar.button("🔄 重新掃描符合條件幣種"):
     st.rerun()
 
-with st.spinner(f'正在快速載入 {symbol_option} ({timeframe_option}) 數據中...'):
-    analysis = engine.analyze_market()
+# 快取或即時執行掃描
+with st.spinner(f'正在以 {selected_timeframe} 週期快速掃描自選清單，篩選勝率 >= {min_win_rate_target}% 的幣種...'):
+    qualified_coins = quick_scan_watchlist(timeframe=selected_timeframe, min_win_rate=float(min_win_rate_target))
 
-if analysis:
-    # 顯示核心指標數據
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("當前幣種與價格", f"{analysis['symbol']}", f"${analysis['close']:,.2f}")
-    col2.metric("Vegas 大趨勢判斷", analysis['trend'])
-    col3.metric("當前策略訊號", analysis['signal'])
-    col4.metric("預估勝率評估", f"{analysis['win_rate']}% 🌟")
+st.sidebar.markdown("---")
+st.sidebar.subheader(f"🎯 符合條件幣種 ({len(qualified_coins)} 個)")
 
-    st.markdown("---")
+if qualified_coins:
+    # 讓使用者在左側選單直接點選符合條件的幣種
+    coin_symbols = [item['symbol'] for item in qualified_coins]
+    selected_symbol = st.sidebar.radio("👇 點選查看右側詳情：", coin_symbols)
     
-    # 顯示風控點位 (止盈止損)
-    st.subheader("🎯 建議執行點位 (Risk & Reward)")
-    r_col1, r_col2, r_col3 = st.columns(3)
-    r_col1.error(f"🛑 建議止損價 (Stop Loss): ${analysis['sl']:,.2f}")
-    r_col2.success(f"🟢 第一目標止盈 (TP1): ${analysis['tp1']:,.2f}")
-    r_col3.success(f"🎯 第二目標止盈 (TP2): ${analysis['tp2']:,.2f}")
-
-    # 繪製 Plotly 互動圖表
-    st.markdown("---")
-    st.subheader(f"📈 {analysis['symbol']} - Vegas 隧道互動走勢圖")
+    # 抓取當前選中幣種的詳細數據
+    analysis = next((item for item in qualified_coins if item['symbol'] == selected_symbol), None)
     
-    df = analysis['dataframe']
-    fig = go.Figure()
+    if analysis:
+        # 右側主窗格呈現
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("當前選定幣種", analysis['symbol'], f"${analysis['close']:,.2f}")
+        col2.metric("Vegas 短線趨勢", analysis['trend'])
+        col3.metric("策略預估勝率", f"{analysis['win_rate']}% 🌟")
+        col4.metric("建議短線訊號", analysis['signal'])
 
-    # K線圖
-    fig.add_trace(go.Candlestick(
-        x=df['timestamp'],
-        open=df['open'], high=df['high'], low=df['low'], close=df['close'],
-        name='K線'
-    ))
+        st.markdown("---")
+        
+        # 顯示短線風控點位
+        st.subheader("🎯 短線精準執行點位 (Risk & Reward)")
+        r_col1, r_col2, r_col3 = st.columns(3)
+        r_col1.error(f"🛑 建議止損價 (Stop Loss): ${analysis['sl']:,.2f}")
+        r_col2.success(f"🟢 第一目標止盈 (TP1): ${analysis['tp1']:,.2f}")
+        r_col3.success(f"🎯 第二目標止盈 (TP2): ${analysis['tp2']:,.2f}")
 
-    # Vegas 隧道快線
-    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['ema_144'], line=dict(color='blue', width=1), name='EMA 144'))
-    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['ema_169'], line=dict(color='blue', width=1), name='EMA 169'))
-    
-    # Vegas 隧道慢線
-    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['ema_576'], line=dict(color='red', width=1), name='EMA 576'))
-    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['ema_676'], line=dict(color='red', width=1), name='EMA 676'))
+        # 繪製右側主圖表
+        st.markdown("---")
+        st.subheader(f"📈 {analysis['symbol']} ({selected_timeframe}) - Vegas 隧道走勢圖")
+        
+        df = analysis['dataframe']
+        fig = go.Figure()
 
-    fig.update_layout(
-        xaxis_title='時間',
-        yaxis_title='價格 (USDT)',
-        height=600,
-        template='plotly_dark'
-    )
-    
-    st.plotly_chart(fig, use_container_width=True)
+        fig.add_trace(go.Candlestick(
+            x=df['timestamp'],
+            open=df['open'], high=df['high'], low=df['low'], close=df['close'],
+            name='K線'
+        ))
+        fig.add_trace(go.Scatter(x=df['timestamp'], y=df['ema_144'], line=dict(color='blue', width=1), name='EMA 144'))
+        fig.add_trace(go.Scatter(x=df['timestamp'], y=df['ema_169'], line=dict(color='blue', width=1), name='EMA 169'))
+        fig.add_trace(go.Scatter(x=df['timestamp'], y=df['ema_576'], line=dict(color='red', width=1), name='EMA 576'))
+        fig.add_trace(go.Scatter(x=df['timestamp'], y=df['ema_676'], line=dict(color='red', width=1), name='EMA 676'))
+
+        fig.update_layout(
+            xaxis_title='時間',
+            yaxis_title='價格 (USDT)',
+            height=600,
+            template='plotly_dark'
+        )
+        st.plotly_chart(fig, use_container_width=True)
 else:
-    st.error("無法取得市場數據，請檢查網路連線或稍後再試。")
+    st.warning(f"在 {selected_timeframe} 週期下，目前自選清單中沒有符合勝率 $\ge {min_win_rate_target}\%$ 的強勢發散標的（可能多數在盤整）。建議切換回 15m 或降低門檻試試看！")

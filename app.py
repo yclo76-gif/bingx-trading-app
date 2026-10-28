@@ -1,36 +1,48 @@
 import streamlit as st
 import plotly.graph_objects as go
-from trading_strategy import quick_scan_watchlist
+from trading_strategy import quick_scan_watchlist, TradingStrategyEngine
 
 st.set_page_config(page_title="極短線高勝率雷達看板", layout="wide")
 
 st.title("⚡ BingX 5m / 15m 極短線高勝率策略雷達")
-st.markdown("自動掃描自選清單，過濾出 **勝率 $\ge 65\%$** 的強勢發散幣種，提供左側選單快速切換與右側主窗格詳細監控。")
+st.markdown("自動掃描自選清單，過濾出 **勝率 $\ge 65\%$** 的強勢發散幣種，點選左側選單可瞬間切換右側圖表與明細。")
 
 # 側邊欄設定
 st.sidebar.header("⚙️ 極短線掃描設定")
 
-# 專注於 5m 與 15m 短線時區
 selected_timeframe = st.sidebar.selectbox("選擇短線 K線週期", ["5m", "15m"], index=1)
 min_win_rate_target = st.sidebar.slider("勝率過濾門檻 (%)", min_value=60, max_value=75, value=65, step=1)
 
-if st.sidebar.button("🔄 重新掃描符合條件幣種"):
+# 加入清除快取按鈕，讓想強制重新整理的人使用
+if st.sidebar.button("🔄 強制重新整理掃描結果"):
+    st.cache_data.clear()
     st.rerun()
 
-# 快取或即時執行掃描
-with st.spinner(f'正在以 {selected_timeframe} 週期快速掃描自選清單，篩選勝率 >= {min_win_rate_target}% 的幣種...'):
-    qualified_coins = quick_scan_watchlist(timeframe=selected_timeframe, min_win_rate=float(min_win_rate_target))
+# 關鍵優化 1：使用 @st.cache_data 快取整體掃描清單，避免切換時重複掃描
+@st.cache_data(ttl=120)
+def get_cached_qualified_coins(timeframe, min_wr):
+    return quick_scan_watchlist(timeframe=timeframe, min_win_rate=float(min_wr))
+
+with st.spinner(f'正在以 {selected_timeframe} 週期快速檢索自選清單...'):
+    qualified_coins = get_cached_qualified_coins(selected_timeframe, min_win_rate_target)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader(f"🎯 符合條件幣種 ({len(qualified_coins)} 個)")
 
 if qualified_coins:
-    # 讓使用者在左側選單直接點選符合條件的幣種
     coin_symbols = [item['symbol'] for item in qualified_coins]
-    selected_symbol = st.sidebar.radio("👇 點選查看右側詳情：", coin_symbols)
     
-    # 抓取當前選中幣種的詳細數據
-    analysis = next((item for item in qualified_coins if item['symbol'] == selected_symbol), None)
+    # 讓左側選單記憶狀態
+    selected_symbol = st.sidebar.radio("👇 點選查看右側詳情：", coin_symbols, key="selected_coin_radio")
+    
+    # 關鍵優化 2：針對單一幣種加入獨立快取，實現點擊左側時秒開、不反灰
+    @st.cache_data(ttl=30)
+    def get_single_coin_analysis(symbol, timeframe):
+        engine = TradingStrategyEngine(symbol=symbol, timeframe=timeframe)
+        return engine.analyze_market()
+
+    with st.spinner(f'正在載入 {selected_symbol} 盤面數據...'):
+        analysis = get_single_coin_analysis(selected_symbol, selected_timeframe)
     
     if analysis:
         # 右側主窗格呈現
@@ -74,4 +86,4 @@ if qualified_coins:
         )
         st.plotly_chart(fig, use_container_width=True)
 else:
-    st.warning(f"在 {selected_timeframe} 週期下，目前自選清單中沒有符合勝率 $\ge {min_win_rate_target}\%$ 的強勢發散標的（可能多數在盤整）。建議切換回 15m 或降低門檻試試看！")
+    st.warning(f"在 {selected_timeframe} 週期下，目前自選清單中沒有符合勝率 $\ge {min_win_rate_target}\%$ 的強勢發散標的。")
